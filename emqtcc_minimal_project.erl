@@ -19,7 +19,7 @@ init()->
   emqttc:subscribe(C, <<"RootGro/#">>, qos1),    %Start subscribing to a topic.
   subscribe(C, PidDbD).  % Start receiveloop to receive messages on the subscribed topic.
   
-% Databas connect dunction  
+% Databas connection  
 connect()->
     {ok, Pid} = mysql:start_link([{host, "127.0.0.1"}, {user, "root"},
                               {password, "Ranyrg1324"}, {database, "grocerys"}]).
@@ -28,17 +28,20 @@ connect()->
 subscribe(C,PidDbD) ->    
             receive 
                 {publish, Topic, Product} -> 
+		%Decode json object into a tuple of binary
                     [{BinTodo, BinMsg}] = jsx:decode(Product),
+			%Case expression to match if incoming message i a add, remove or getlist message.
                         case [{BinTodo, BinMsg}] of
                         [{<<"add">>, BinMsg}] ->
                             addToDB(PidDbD, BinMsg);
                         [{<<"remove">>, BinMsg}] ->
                         removeFromDB(PidDbD, BinMsg);
                         [{<<"getList">>, BinMsg}] ->
+			%Puts a list of items in to Rows 
                             {ok, ColumnNames, Rows} = getList(PidDbD, BinMsg),
-                            
+			%Make the Rows list to list with binary. 
                             BinRows = [list_to_binary(R)|| R <- Rows],
-                            io:format(">>Rows>> ~p", [BinRows]),
+                            %Publis that row to a specific topic and encode the list with binaries to a json object.
                             emqttc:publish(C, <<"JohanPhone/List">>, jsx:encode(BinRows))
 
                      end, 
@@ -48,6 +51,7 @@ subscribe(C,PidDbD) ->
                     
  createList(PidDbD, Value)-> implemnt.
  
+%Gets all values from a specific table and colume. 
  getList(PidDbD, Value) ->
      mysql:query(PidDbD, "SELECT listName FROM lists").
     
