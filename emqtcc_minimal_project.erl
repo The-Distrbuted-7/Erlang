@@ -1,7 +1,7 @@
 -module(emqtcc_minimal_project).
 
 %% API exports
--export([init/0, subscribe/2, start/0, connect/0, getFromDb/1, addToDB/2, removeFromDB/2]).
+-export([init/0, subscribe/2, start/0, connect/0, getList/2, addToDB/2, removeFromDB/2]).
 
 
 %To make this work you have to add this dependencies to your reaber project. 
@@ -23,24 +23,34 @@ init()->
 connect()->
     {ok, Pid} = mysql:start_link([{host, "127.0.0.1"}, {user, "root"},
                               {password, "Ranyrg1324"}, {database, "grocerys"}]).
-%Get from database  
-getFromDb({Pid})->
-    {ok, ColumnNames, Rows} =
-    mysql:query(Pid, "SELECT * FROM lists WHERE ListId = 1").
 
 % Receiveloop to receive messages on the subscribed topic
 subscribe(C,PidDbD) ->    
             receive 
                 {publish, Topic, Product} -> 
-                    case binary:bin_to_list(Product) of
-                        [123,97,100,100|Xs] ->
-                            addToDB(PidDbD, Product);
-                        [123,114,101,109,111,118,101|Xs] -> removeFromDB(PidDbD, [123,97,100,100|Xs])
+                    [{BinTodo, BinMsg}] = jsx:decode(Product),
+                        case [{BinTodo, BinMsg}] of
+                        [{<<"add">>, BinMsg}] ->
+                            addToDB(PidDbD, BinMsg);
+                        [{<<"remove">>, BinMsg}] ->
+                        removeFromDB(PidDbD, BinMsg);
+                        [{<<"getList">>, BinMsg}] ->
+                            {ok, ColumnNames, Rows} = getList(PidDbD, BinMsg),
+                            
+                            BinRows = [list_to_binary(R)|| R <- Rows],
+                            io:format(">>Rows>> ~p", [BinRows]),
+                            emqttc:publish(C, <<"JohanPhone/List">>, jsx:encode(BinRows))
 
                      end, 
                      subscribe(C, PidDbD)
+                
             end.
                     
+ createList(PidDbD, Value)-> implemnt.
+ 
+ getList(PidDbD, Value) ->
+     mysql:query(PidDbD, "SELECT listName FROM lists").
+    
  
  %Add to database
 addToDB(PidDbD, Value )-> 
