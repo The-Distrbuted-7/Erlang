@@ -1,20 +1,20 @@
 -module(emqtcc_minimal_project).
 
 %% API exports
--export([init/0,decode/1]).
+-export([start/0,init/0]).
 
 start() ->
 	%%check if the process is already spawned
 	case whereis(sts) of
-	  %%in case it is just return the PID
-	  _ -> 
-	  {ok, whereis(sts)};
 	  %%in case not
 	  undefined -> 
 	  %%spawn it and return the PID
 	  Pid=spawn(emqtcc_minimal_project, init, []),
 	  register(sts, Pid),
-	  {ok, Pid}
+	  {ok, Pid};
+	  %%in case it is already spawned just return the PID
+	  _ -> 
+	  {ok, whereis(sts)}
 	end.
 
 init()->
@@ -30,54 +30,61 @@ init()->
   
   
 %Parse the request(JSon) which fullfil our RFC to erlang terms  
-%@para MQTTmsg @return Client-id,Req,Item
+%@para MQTTmsg @return <<"client-id">>,<<"list-name">>,<<"add-delete">>,<<"{"item":"item1"}">>
 decode(Message) ->  
 try	
-[{<<"client_id">>,ID},
- {<<"request">>,Req},
- {<<"data">>,[{<<"item">>,Item}]}]
+[{<<"client_id">>,_},
+ {<<"list">>,_},
+ {<<"request">>,_},
+ {<<"data">>,[{<<"item">>,_}]}]
  = jsx:decode(Message)
- catch error:E -> [{<<"client_id">>,1},
- {<<"request">>,<<"ERROR">>},
- {<<"data">>,[{<<"item">>,c}]}]
+ %%in case the message doesn't fullfil our RFC 
+ catch error:E -> [{<<"client_id">>,error},{<<"list">>,error},
+ {<<"request">>,error},
+ {<<"data">>,[{<<"item">>,error}]}]
  end.
 %loop to listen for requests and responde
-%@para Dictionary
+%@para {dict,LIST}, MQTTCLIENT
 loop(Dict,C) -> 
 	receive 
-		%%Topic will tell us where to store the values
 		{publish ,Topic, Message} ->
-			%decode the message, if the message doesn't fullfill our RFC the process will crash
-			[{_,Client_id},{_,Req},{_,[{_,Item}]}]  = decode(Message),
+			[{_,Client_id},{_,List},{_,Req},{_,[{_,Item}]}]  = decode(Message), io:format("~p~n",[Req]),
 			%check whether it's add,del or fetch request
 			case Req of 
-				<<"add">> -> Updated_dict = add(Client_id,Dict,Topic,Item,C), loop(Updated_dict,C);
-				<<"delete">> -> Updated_dict = del(Client_id,Dict,Topic,Item,C), loop(Updated_dict,C);
-				<<"fetch">> -> Updated_dict = add(Client_id,Dict,Topic,Item,C), loop(Updated_dict,C);
+				%% add the values, update the dict and reply to client (on the same topic)
+				<<"add">> -> Updated_dict = add(Client_id,List,Dict,Topic,Item,C), loop(Updated_dict,C);
+				%% delete the values, update the dict and reply to client (on the same topic)
+				<<"delete">> -> Updated_dict = del(Client_id,List,Dict,Topic,Item,C), loop(Updated_dict,C);
+				%% get the values, reply to client (on the same topic)
+				<<"fetch">> -> Updated_dict = add(Client_id,List,Dict,Topic,Item,C), loop(Updated_dict,C);
+				%% in case of a decode crash just loop again
 				_ -> loop(Dict,C)
 			end
-	end,
-	io:format("Topic:~p~n",[Topic]),
-	io:format("Message~p~n",[Message]),
-	loop(Dict,C).
-encode_list(L) -> 
+	end.
+% get the list of values in a form that fullfil the RFC	
+encode_list(L) ->
 		[[{<<"item">>,X}] || {X,X} <- L].
-%%get the list name	
-get_list(L) ->  case hd(L) of 47 -> tl(L); _ -> get_list(tl(L)) end.
-%%Helper functions to add to the dict
-add(Client_id,Dict,Topic,Item,C) ->
-	List = get_list(binary:bin_to_list(Topic)),
+		
+%% Explaination: the Master dict conatins keys of form {<<"client-id">>,<<"list-name">>} and the values 
+%% are dictionaries with keys equal to the values i.e {dict,[{apple,apple}]}
+ 
+%% add the item and reply to client
+add(Client_id,List,Dict,Topic,Item,C) ->
+	%% see if we have a dict with the key {<<Client_id>>,<<List>>}
 	OldDict = dict_get(Dict,{Client_id,List}),
 	case OldDict of 
-		not_found -> {New_Dict,_} = dict_put(dict_new(),Item,Item), {Updated,_} = dict_put(Dict,{Client_id,List},New_Dict), {dict,Listt} = New_Dict,
+		%case it's a new list or a new  client
+		not_found -> %% do some magic 
+					{New_Dict,_} = dict_put(dict_new(),Item,Item), {Updated,_} = dict_put(Dict,{Client_id,List},New_Dict), {dict,Listt} = New_Dict,
 					 emqttc:publish(C, Topic, jsx:encode([{<<"reply">>,<<"done">>},{<<"data">>,encode_list(Listt)}])),
 					 Updated;
-		_ -> {UpdatedChild,_} = dict_put(OldDict,Item,Item), {Updated,_} = dict_put(Dict,{Client_id,List},UpdatedChild), {dict,Listt} = UpdatedChild,
+		%%case we already have a dictionary for that list and client			 
+		_ -> % do some more magic
+			 {UpdatedChild,_} = dict_put(OldDict,Item,Item), {Updated,_} = dict_put(Dict,{Client_id,List},UpdatedChild), {dict,Listt} = UpdatedChild,
 			 emqttc:publish(C, Topic, jsx:encode([{<<"reply">>,<<"done">>},{<<"data">>,encode_list(Listt)}])),
 			 Updated
 	end.
-del(Client_id,Dict,Topic,Item,C) ->
-	List = get_list(binary:bin_to_list(Topic)),
+del(Client_id,List,Dict,Topic,Item,C) ->
 	OldDict = dict_get(Dict,{Client_id,List}),
 	case OldDict of 
 		not_found -> Dict;
@@ -112,7 +119,7 @@ dict_put({dict,L}, Key, Val) ->
 								end
 						end,L)},Var} 
 			        end.
-dict_del({dict,[]},Key,Elements) -> {dict,Elements};			        
+dict_del({dict,[]},_,Elements) -> {dict,Elements};			        
 dict_del({dict,L},Key,Elements) ->
 	{K,_} = hd(L),
 	case K of
